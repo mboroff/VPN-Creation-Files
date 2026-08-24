@@ -1,127 +1,174 @@
 # Windows 11 L2TP/IPSec VPN Automation Suite
 
-This project lets an administrator hand a remote Windows 11 user a single file to set up
-a VPN connection. The end user does nothing but **run one `.bat` file as Administrator** —
-no manual network settings, no typed server addresses, no credential prompts to fill in.
+This project lets an administrator provide a remote Windows 11 user with a single deployment file that sets up an L2TP/IPsec VPN connection with a pre-shared key (PSK).
 
-The suite has two parts:
+**Important:** The admin runs **one builder `.bat`** to generate:
+- A per-user **deployment `.bat`** (the file the end user runs as Administrator).
+- One or more **HTML email templates** containing a real clickable download link.
 
-1. A builder script the administrator runs once per user, which produces the user's
-   personal deployment `.bat` file (zipped for easy transfer).
-2. An email-instructions generator that produces a ready-to-send **HTML email template**
-   containing the download link and every step the user needs, so the administrator can
-   just paste it into an email client and hit send.
+The end user only downloads the deployment file and runs it.
 
 ---
 
-## 🛠️ How It Works
+## 🛠️ What the builder script does (`Create-VPN-Package-and-letter-prompt-HTML.bat`)
 
-### Step 1 — Build the user's deployment package
-Running **`Create-VPN-Package-and-letter-prompt-HTML.bat`** asks the administrator for:
+When you run `Create-VPN-Package-and-letter-prompt-HTML.bat`, it prompts for:
 
-* **VPN Connection Name** – used as the profile name and to build the server address
-  as `[ConnectionName].ddns.net`
-* **Call Sign** – the username for the connection
-* **Password** – the password for the connection
+- **VPN Connection Name** → stored in `VpnName`
+- **Call Sign** → stored in `User` (used as the VPN username)
+- **Password** → stored in `Pass` (used for credentials and for dialing)
 
-From these answers the script generates:
+### Output #1: Generated deployment batch file
+The script creates a file named:
 
-* **`deploy-[CallSign]-[ConnectionName]-vpn.bat`** — the single file the end user will run.
-* **`deploy-[CallSign]-[ConnectionName]-vpn.zip`** — the same file compressed with the
-  built-in Windows `tar` utility, to sidestep email filters that block `.bat` attachments.
+- **`deploy-[CallSign]-[ConnectionName]-vpn.bat`**
+  - e.g. `deploy-NG9WM-MySite-vpn.bat`
 
-### Step 2 — What the user's deployment file does
-When the remote user runs `deploy-[CallSign]-[ConnectionName]-vpn.bat` as Administrator,
-it silently:
-
-* **Self-elevates** — relaunches itself with admin rights via UAC if it wasn't already
-  started as Administrator.
-* **Creates the VPN profile** — runs `Add-VpnConnection` with the server address, L2TP
-  tunnel type, the pre-shared key (`vpn` by default), and MSChapv2 authentication, set up
-  as an all-users connection.
-* **Fixes NAT-T for home routers** — sets
-  `AssumeUDPEncapsulationContextOnSendRule = 2` under
-  `HKLM\SYSTEM\CurrentControlSet\Services\PolicyAgent` so the tunnel works behind typical
-  consumer NAT routers.
-* **Fixes the post-reboot credential prompt** — edits the system phonebook
-  (`rasphone.pbk`) so Windows doesn't ask for a password every time.
-* **Stores the credentials** — saves the username/password with `cmdkey` so the
-  connection can dial without a prompt.
-* **Adds one-click desktop shortcuts** — two shortcuts on the **Public Desktop** (visible
-  to any user on the machine):
-  * **`[ConnectionName] Connect`** — dials the VPN with `rasdial`.
-  * **`[ConnectionName] Disconnect`** — drops the VPN with `rasphone -h`.
-* Tells the user to **restart the computer** once setup finishes, since the registry and
-  phonebook changes need a reboot to take effect.
-
-### Step 3 — Build the onboarding email
-After the `.zip` is uploaded somewhere the user can download it from (e.g. Dropbox), the
-same builder script prompts the administrator for that **download link** and generates:
-
-* **`[CallSign]-[ConnectionName]-Email-Template.html`** — a complete onboarding email as
-  an HTML file, with a real clickable hyperlink (a plain `.txt` file can't do that).
-
-The generated email walks the end user through:
-1. Clicking the link and downloading the `.bat` file.
-2. Right-clicking it and choosing **Run as administrator**.
-3. Restarting the computer.
-4. Using the new **Connect** / **Disconnect** desktop shortcuts.
-5. Confirming the connection under **Settings > Network & internet > VPN**.
-
-The administrator opens the generated `.html` file in a browser, copies the rendered
-message, and pastes it into their email client along with the download link.
+> Note: In the `.bat` content you pasted, the builder **does not create a `.zip`**. It only generates the `.bat` file and the HTML templates.
 
 ---
 
-## 📋 Administrator Workflow Guide
+## ✅ What the generated deployment file does (`deploy-...-vpn.bat`)
 
-1. Double-click **`Create-VPN-Package-and-letter-prompt-HTML.bat`**.
-2. Enter the VPN Connection Name, Call Sign, and Password when prompted.
-3. Find the generated **`deploy-[CallSign]-[ConnectionName]-vpn.zip`** in the same folder
-   and upload it to Dropbox (or similar), then copy the sharable download link.
-4. When prompted, paste that download link back into the script.
-5. The script generates **`[CallSign]-[ConnectionName]-Email-Template.html`**. Open it in
-   a browser, copy the message, and paste it into a new email to the end user.
-6. The end user downloads the `.bat` file from the link, runs it as Administrator,
-   restarts their computer, and uses the desktop shortcuts to connect.
+When the end user runs `deploy-[CallSign]-[ConnectionName]-vpn.bat` **as Administrator**, it does the following:
+
+### 1) Self-elevates (UAC)
+It checks whether it’s running with admin privileges, and if not, it re-launches itself using:
+- `powershell Start-Process -Verb RunAs`
+
+### 2) Creates the VPN profile
+It runs PowerShell to execute:
+
+- `Add-VpnConnection`
+  - **Name**: VPN Connection Name (`$VpnName`)
+  - **ServerAddress**: `${VpnName}.ddns.net`
+  - **TunnelType**: `L2tp`
+  - **PSK**: hardcoded to **`vpn`**
+  - **EncryptionLevel**: `Required`
+  - **AuthenticationMethod**: `MSChapv2`
+  - **RememberCredential**
+  - **AllUserConnection**
+  - **Force**
+
+### 3) Fixes NAT-T / UDP encapsulation
+It sets this DWORD value in the registry:
+
+- Path: `HKLM\SYSTEM\CurrentControlSet\Services\PolicyAgent`
+- Name: `AssumeUDPEncapsulationContextOnSendRule`
+- Value: `2`
+
+### 4) Fixes the post-reboot credential prompt (phonebook edits)
+It edits the system phonebook file:
+
+- `C:\ProgramData\Microsoft\Network\Connections\Pbk\rasphone.pbk`
+
+If it exists, it replaces:
+- `PreviewUserPw=1` → `PreviewUserPw=0`
+- `PreviewDomain=1` → `PreviewDomain=0`
+- `CacheUserPw=0` → `CacheUserPw=1`
+
+### 5) Stores credentials for dialing (`cmdkey`)
+It stores the VPN credentials using:
+
+- `cmdkey /generic:"%VpnName%" /user:"%User%" /pass:"%Pass%"`
+
+### 6) Creates desktop shortcuts (Public Desktop)
+It creates **two shortcuts** on the **Public Desktop**:
+
+- `C:\Users\Public\Desktop\%VpnName% Connect.lnk`
+  - Runs: `rasdial "%VpnName%" "%User%" "%Pass%"`
+  - Includes a small delay (`timeout /t 3`)
+- `C:\Users\Public\Desktop\%VpnName% Disconnect.lnk`
+  - Runs: `rasphone.exe -h "%VpnName%"`
+  - Includes a small delay (`timeout /t 3`)
+
+### 7) User notification
+It ends with:
+- “VPN Setup Complete! Please restart your computer now.”
+- then pauses (`pause`)
+
+### Required reboot
+The generated deployment file instructs a **restart**, because registry/phonebook changes require it.
 
 ---
 
-## 🔍 Automated Verification & Diagnostic Steps
-To confirm a user's deployment applied correctly without dialing the connection,
-run these checks in an elevated PowerShell prompt **on the user's machine**:
+## 📨 Output #2: HTML email templates
 
-### A. Registry Configuration Audit
-Verifies the NAT-T fix is in place for routers behind a NAT firewall:
+After generating the deployment `.bat`, the builder prompts for:
+
+- **Download URL** (Dropbox “share/download” link) for the deployment `.bat`
+
+Then it generates **three HTML files**:
+
+1. **`[CallSign]-unattended-[ConnectionName]-Email-Template.html`**
+   - Automated/unattended instructions for the Windows end user.
+2. **`[CallSign]-MacOS-attended-[ConnectionName]-Email-Template.html`**
+   - Manual instructions for macOS.
+3. **`[CallSign]-Windows-attended-[ConnectionName]-Email-Template.html`**
+   - Manual instructions for Windows (System Settings / VPN UI).
+
+### Link behavior
+The unattended Windows template includes a hyperlink to the provided download URL and references the deployment filename as:
+
+- `deploy-[CallSign]-[ConnectionName]-vpn.bat`
+
+(That filename pattern is hardcoded into the template generation logic.)
+
+---
+
+## 📋 Administrator workflow
+
+1. Run **`Create-VPN-Package-and-letter-prompt-HTML.bat`**
+2. Enter:
+   - VPN Connection Name
+   - Call Sign
+   - Password
+3. Find the generated file:
+   - `deploy-[CallSign]-[ConnectionName]-vpn.bat`
+4. Upload the `.bat` somewhere the user can download it (e.g., Dropbox), and copy the share/download link.
+5. Paste that link into the builder when it prompts for the download URL.
+6. Open each generated HTML file in a browser, copy the rendered message, and send it to the end user(s).
+7. The end user downloads the `.bat` from the link and runs it **as Administrator**, then restarts the computer.
+
+---
+
+## 🔍 Verification / diagnostics (run on the user machine as admin)
+
+### A) NAT-T registry audit
 ```powershell
 Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\PolicyAgent" -Name "AssumeUDPEncapsulationContextOnSendRule"
 ```
-*Expected value:* `2`
+Expected:
+- `2`
 
-### B. VPN Phonebook Settings Audit
-Confirms Windows will save the password and skip the credential prompt. Because the
-connection is created as an all-users profile, the phonebook lives under `ProgramData`,
-not the current user's `AppData`:
+### B) Phonebook edits audit
+Phonebook path:
 ```powershell
 $PbkPath = Join-Path $env:ProgramData 'Microsoft\Network\Connections\Pbk\rasphone.pbk'
 Select-String -Path $PbkPath -Pattern "PreviewUserPw", "CacheUserPw", "PreviewDomain"
 ```
-*Expected values:* `PreviewUserPw=0`, `CacheUserPw=1`, `PreviewDomain=0`
+
+Expected values after replacement logic:
+- `PreviewUserPw=0`
+- `CacheUserPw=1`
+- `PreviewDomain=0`
 
 ---
 
 ## 🔑 Updating the Pre-Shared Key (PSK)
-The pre-shared key is currently hardcoded to `vpn` inside
-**`Create-VPN-Package-and-letter-prompt-HTML.bat`**. If your firewall or gateway policy
-requires a different PSK, find the line that sets `$Psk = 'vpn'` inside the script and
-change the value there, then rebuild any deployment packages you haven't sent out yet.
+
+In the generated deployment file logic, the PSK is **hardcoded** to:
+
+- `$Psk = 'vpn'`
+
+If you need a different PSK, update that value in `Create-VPN-Package-and-letter-prompt-HTML.bat` and regenerate the deployment `.bat` for users.
 
 ---
 
-## 🗑️ Rollback & Decommission Command
-To remove the VPN profile and both desktop shortcuts from a workstation, run this in an
-elevated PowerShell prompt on that machine (replace `YourConnectionName` with the actual
-profile name):
+## 🗑️ Rollback / decommission
+
+To remove the VPN profile and desktop shortcuts (run elevated PowerShell on the machine):
+
 ```powershell
 Remove-VpnConnection -Name "YourConnectionName" -Force
 Remove-Item "C:\Users\Public\Desktop\YourConnectionName*.lnk" -Force
@@ -129,6 +176,18 @@ Remove-Item "C:\Users\Public\Desktop\YourConnectionName*.lnk" -Force
 
 ---
 
-**Project Lead:** Marty WD9GYM
-**Target Platform:** Windows 11 Enterprise / Pro
+## About your “no `.bat` upload” constraint (workarounds)
+
+Since the deployment artifact **is a `.bat`** in your current design, sites that block `.bat` uploads force you to distribute it through a different container/type. Common approaches:
+
+- Upload **some allowed archive type** (if allowed): `.zip`, `.7z`, or even rename-and-serve is sometimes blocked—zip is the usual safest.
+- If your UI blocks only *uploads* but not *links*, use a third-party host (Dropbox/Drive) where `.bat` is permitted and share the **download link** (your template builder already supports this).
+- If you truly must avoid `.bat` delivery, the code would need to be refactored to generate a different executable/script type (e.g., PowerShell-based launcher), which is a larger change.
+
+If you tell me **what formats are allowed by your Web UI** (e.g., “zip ok, bat not ok”), I can suggest the cleanest compliant distribution method and adjust the README accordingly.  
+
+---
+
+**Project Lead:** Marty WD9GYM  
+**Target Platform:** Windows 11 Enterprise / Pro  
 **Protocol Focus:** L2TP over IPSec with Pre-Shared Key Authentication
